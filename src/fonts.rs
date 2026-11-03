@@ -66,5 +66,10 @@ fn load(ctx: &egui::Context, name: &'static str, files: &[&str]) {
         .into_iter()
         .map(|family| InsertFontFamily { family, priority: FontPriority::Lowest })
         .collect();
-    ctx.add_font(FontInsert { name: format!("script-{name}"), data: egui::FontData::from_owned(bytes), families });
+    // Les polices CJK de Windows ont une ligne de base plus haute que Google Sans : sans
+    // correction, kanjis et crochets 「」【】 flottent au-dessus du texte latin.
+    let mut data = egui::FontData::from_owned(bytes);
+    let default = if matches!(name, "jp" | "zh" | "ko") { 0.11 } else { 0.0 };
+    data.tweak.y_offset_factor = std::env::var("MIXTAPE_CJK_OFFSET").ok().and_then(|v| v.parse().ok()).unwrap_or(default);
+    ctx.add_font(FontInsert { name: format!("script-{name}"), data, families });
 }

@@ -150,6 +150,14 @@ fn place<R>(ui: &mut egui::Ui, b: UiBuilder, f: impl FnOnce(&mut egui::Ui) -> R)
     f(&mut child)
 }
 
+/// Pose un widget dans un rectangle *sans* réserver de place dans le parent (`ui.put`
+/// en réserve : les boutons qui n'apparaissent qu'au survol décalaient la liste), avec
+/// un identifiant stable (`salt`) : sinon l'identifiant change quand d'autres widgets
+/// apparaissent ou disparaissent, et egui ferme les menus ancrés dessus.
+fn put_at(ui: &mut egui::Ui, rect: Rect, salt: impl std::hash::Hash + std::fmt::Debug, widget: impl egui::Widget) -> egui::Response {
+    place(ui, UiBuilder::new().max_rect(rect).id_salt(salt).layout(Layout::centered_and_justified(egui::Direction::TopDown)), |ui| ui.add_sized(rect.size(), widget))
+}
+
 /// Avancement 0→1 d'un survol, adouci (transition de ~0,2 s).
 fn hover_t(ui: &egui::Ui, id: egui::Id, hovered: bool) -> f32 {
     let t = ui.ctx().animate_bool_with_time(id.with("hover"), hovered, 0.2);
@@ -445,7 +453,7 @@ fn square_thumb(url: &str) -> egui::Image<'_> {
 
 fn put_square_thumb(ui: &mut egui::Ui, rect: Rect, url: &str, radius: u8) {
     ui.painter().rect_filled(rect, radius as f32, SURFACE_HI);
-    ui.put(rect, square_thumb(url).fit_to_exact_size(rect.size()).corner_radius(radius));
+    put_at(ui, rect, ("thumb", url), square_thumb(url).fit_to_exact_size(rect.size()).corner_radius(radius));
 }
 
 /// Mosaïque 2×2 des premières pochettes (cartes de playlists, comme Swiftify).
@@ -466,7 +474,7 @@ fn collage(ui: &mut egui::Ui, rect: Rect, tracks: &[Track], radius: u8, fallback
             ];
             for (k, cr) in corners.into_iter().enumerate() {
                 let r = Rect::from_min_size(rect.min + Vec2::new((k % 2) as f32 * h.x, (k / 2) as f32 * h.y), h);
-                ui.put(r, square_thumb(&tracks[k].thumb).fit_to_exact_size(h).corner_radius(cr));
+                put_at(ui, r, ("collage", k, &tracks[k].thumb), square_thumb(&tracks[k].thumb).fit_to_exact_size(h).corner_radius(cr));
             }
         }
     }
@@ -811,8 +819,8 @@ fn track_menu(ui: &mut egui::Ui, t: &Track, lib: &Library, actions: &mut Vec<Act
     }
 }
 
-fn more_button(ui: &mut egui::Ui, rect: Rect, color: Color32, t: &Track, lib: &Library, actions: &mut Vec<Action>, ctx_pl: Option<(usize, usize)>) {
-    place(ui, UiBuilder::new().max_rect(rect), |ui| {
+fn more_button(ui: &mut egui::Ui, rect: Rect, salt: impl std::hash::Hash + std::fmt::Debug, color: Color32, t: &Track, lib: &Library, actions: &mut Vec<Action>, ctx_pl: Option<(usize, usize)>) {
+    place(ui, UiBuilder::new().max_rect(rect).id_salt(("more", salt)), |ui| {
         ui.menu_button(ico(I_MORE, 20.0, color), |ui| track_menu(ui, t, lib, actions, ctx_pl));
     });
 }
@@ -851,20 +859,28 @@ fn track_list(ui: &mut egui::Ui, id: &str, tracks: &[Track], lib: &Library, acti
             let text = Rect::from_min_max(Pos2::new(art.right() + 14.0, rect.top()), Pos2::new(dur_x - 60.0, rect.bottom()));
             text_in(ui, text, RichText::new(&t.title).font(bold(15.5)).color(if is_current { PRIMARY } else { TEXT }), Some(RichText::new(&t.artist).color(MUTED).size(13.5)));
 
+            let ctx_pl = playlist.map(|pl| (pl, i));
+            if i == 0 || i == 3 {
+                // Positions mémorisées pour l'autotest « @souris ».
+                ui.ctx().data_mut(|d| d.insert_temp(egui::Id::NULL.with(("dbg-row", id, i)), (rect, more_r)));
+            }
+            more_button(ui, more_r, (id, i), if hovered { TEXT } else { FAINT }, t, lib, actions, ctx_pl);
+            // Boutons visibles au survol seulement : créés APRÈS le « … ». L'identifiant d'un
+            // widget egui dépend des widgets créés avant lui dans le même Ui ; s'ils
+            // apparaissaient avant, l'identifiant du « … » changerait quand la souris entre
+            // dans son menu (la ligne n'est alors plus survolée) et egui fermerait le menu.
             if hovered || liked {
-                let b = ui.put(heart_r, egui::Button::new(ico(if liked { I_HEART_FILL } else { I_HEART }, 20.0, if liked { PRIMARY } else { MUTED })).frame(false));
+                let b = put_at(ui, heart_r, ("heart", id, i), egui::Button::new(ico(if liked { I_HEART_FILL } else { I_HEART }, 20.0, if liked { PRIMARY } else { MUTED })).frame(false));
                 if b.on_hover_text(if liked { "Retirer des titres likés" } else { "Ajouter aux titres likés" }).clicked() {
                     actions.push(Action::ToggleLike(t.clone()));
                 }
             }
             if hovered {
-                let b = ui.put(add_r, egui::Button::new(ico(I_ADD, 20.0, MUTED)).frame(false));
+                let b = put_at(ui, add_r, ("add", id, i), egui::Button::new(ico(I_ADD, 20.0, MUTED)).frame(false));
                 if b.on_hover_text("Ajouter à la file d'attente").clicked() {
                     actions.push(Action::Enqueue(t.clone()));
                 }
             }
-            let ctx_pl = playlist.map(|pl| (pl, i));
-            more_button(ui, more_r, if hovered { TEXT } else { FAINT }, t, lib, actions, ctx_pl);
             resp.context_menu(|ui| track_menu(ui, t, lib, actions, ctx_pl));
             if resp.clicked() {
                 actions.push(Action::Play { tracks: tracks.to_vec(), start: i });
@@ -1058,7 +1074,7 @@ fn hero_card(app: &mut App, ui: &mut egui::Ui, p: &Props) {
     match &app.art {
         Some((u, Loaded::Ready(a))) if *u == t.url => {
             ui.painter().rect_filled(art, 22.0, SURFACE_HI);
-            ui.put(art, egui::Image::from_texture(egui::load::SizedTexture::from_handle(&a.tex)).fit_to_exact_size(art.size()).corner_radius(22));
+            put_at(ui, art, "hero-art", egui::Image::from_texture(egui::load::SizedTexture::from_handle(&a.tex)).fit_to_exact_size(art.size()).corner_radius(22));
         }
         _ => put_square_thumb(ui, art, &t.thumb, 22),
     }
@@ -1509,7 +1525,7 @@ fn queue_list(app: &mut App, ui: &mut egui::Ui, p: &Props, imm: bool) {
             text_in(ui, text, RichText::new(title).font(bold(15.0)).color(color), Some(RichText::new(artist).color(sub_c).size(13.0)));
             if hovered && k > 0 {
                 let r = Rect::from_center_size(Pos2::new(rect.right() - 22.0, rect.center().y), Vec2::splat(32.0));
-                if ui.put(r, egui::Button::new(ico(I_CLOSE, 18.0, sub_c)).frame(false)).on_hover_text("Retirer").clicked() {
+                if put_at(ui, r, ("queue-remove", i), egui::Button::new(ico(I_CLOSE, 18.0, sub_c)).frame(false)).on_hover_text("Retirer").clicked() {
                     app.actions.push(Action::QueueRemove(i));
                 }
             }
@@ -1569,7 +1585,7 @@ fn player_bar(app: &mut App, ui: &mut egui::Ui, p: &Props, rect: Rect) {
                 let (art, art_resp) = ui.allocate_exact_size(Vec2::splat(50.0), Sense::click());
                 match &app.art {
                     Some((u, Loaded::Ready(a))) if *u == t.url => {
-                        ui.put(art, egui::Image::from_texture(egui::load::SizedTexture::from_handle(&a.tex)).fit_to_exact_size(art.size()).corner_radius(12));
+                        put_at(ui, art, "bar-art", egui::Image::from_texture(egui::load::SizedTexture::from_handle(&a.tex)).fit_to_exact_size(art.size()).corner_radius(12));
                     }
                     _ => put_square_thumb(ui, art, &t.thumb, 12),
                 }
@@ -1780,7 +1796,7 @@ fn player_column(app: &mut App, ui: &mut egui::Ui, p: &Props, area: Rect, light:
         }
         _ => {
             ui.painter().add(cookie(c, art_r * 0.96, 10.0, 0.045, rot, Color32::from_white_alpha(40)));
-            ui.put(Rect::from_center_size(c, Vec2::splat(36.0)), egui::Spinner::new().color(Color32::WHITE));
+            put_at(ui, Rect::from_center_size(c, Vec2::splat(36.0)), "art-spinner", egui::Spinner::new().color(Color32::WHITE));
         }
     }
 

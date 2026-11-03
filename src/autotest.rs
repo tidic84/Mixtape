@@ -26,6 +26,10 @@ pub struct AutoTest {
     expected: Option<(i64, f64)>,
     /// Position du premier titre réellement joué (des vidéos peuvent être sautées).
     first: i64,
+    /// Événements de souris à injecter à la prochaine image (mode « @souris »).
+    pub fake_events: Vec<egui::Event>,
+    probe: Vec<String>,
+    path: Vec<egui::Pos2>,
 }
 
 impl AutoTest {
@@ -43,7 +47,7 @@ impl AutoTest {
             let _ = std::fs::remove_file(out.join("library.json"));
         }
         let now = Instant::now();
-        Some(Self { query, out, step: 0, started: now, step_at: now, log: vec![], lyrics: String::new(), expected, first: -1 })
+        Some(Self { query, out, step: 0, started: now, step_at: now, log: vec![], lyrics: String::new(), expected, first: -1, fake_events: vec![], probe: vec![], path: vec![] })
     }
 
     pub fn library_path(&self) -> PathBuf {
@@ -101,6 +105,10 @@ fn run(t: &mut AutoTest, app: &mut App, p: &Props) {
     }
     if t.query == "@settings" {
         settings(t, app, p, &ctx);
+        return;
+    }
+    if t.query.starts_with("@souris ") {
+        mouse_test(t, app, p, &ctx);
         return;
     }
     if t.query.starts_with("@import ") {
@@ -473,6 +481,78 @@ fn import_test(t: &mut AutoTest, app: &mut App, p: &Props, ctx: &egui::Context) 
             );
             t.step = 99;
             t.write_report(true, &report);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        _ => {}
+    }
+}
+
+fn row_rects(ctx: &egui::Context, i: usize) -> Option<(egui::Rect, egui::Rect)> {
+    ctx.data(|d| d.get_temp(egui::Id::NULL.with(("dbg-row", "results", i))))
+}
+
+fn press(pos: egui::Pos2, pressed: bool) -> egui::Event {
+    egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() }
+}
+
+/// `--autotest "@souris <recherche>" <dossier>` : survol d'une ligne (la liste ne doit pas
+/// bouger), puis menu « … » ouvert et souris amenée dedans (il doit rester ouvert).
+fn mouse_test(t: &mut AutoTest, app: &mut App, p: &Props, ctx: &egui::Context) {
+    let waited = t.step_at.elapsed();
+    let after = |ms: u64| waited > Duration::from_millis(ms);
+    match t.step {
+        0 if !app.results.is_empty() && after(2500) => {
+            t.mark("résultats", p, app);
+            t.screenshot(ctx, "1-resultats.png");
+        }
+        1 if after(500) => {
+            let (Some((r0, _)), Some((r3, _))) = (row_rects(ctx, 0), row_rects(ctx, 3)) else { return };
+            t.probe.push(format!("ligne 3 avant survol : y={:.1}", r3.top()));
+            t.fake_events.push(egui::Event::PointerMoved(r0.center()));
+            t.mark("survol ligne 0", p, app);
+        }
+        2 if after(600) => {
+            let Some((r3, _)) = row_rects(ctx, 3).map(|(r, m)| (r, m)) else { return };
+            t.probe.push(format!("ligne 3 pendant survol : y={:.1}", r3.top()));
+            t.screenshot(ctx, "2-survol.png");
+            let (_, more) = row_rects(ctx, 0).unwrap();
+            t.fake_events.push(egui::Event::PointerMoved(more.center()));
+            t.mark("vers « … »", p, app);
+        }
+        3 if after(300) => {
+            let (_, more) = row_rects(ctx, 0).unwrap();
+            t.fake_events.push(press(more.center(), true));
+            t.fake_events.push(press(more.center(), false));
+            t.mark("clic « … »", p, app);
+        }
+        4 if after(400) => {
+            t.probe.push(format!("menu ouvert après clic : {}", egui::Popup::is_any_open(ctx)));
+            t.screenshot(ctx, "2b-menu-ouvert.png");
+            // Trajet progressif vers l'intérieur du menu (en bas à gauche du bouton).
+            let (_, more) = row_rects(ctx, 0).unwrap();
+            t.path = (1..=12).map(|k| more.center() + egui::vec2(4.0 * k as f32, 6.0 * k as f32)).collect();
+            t.mark("souris vers le menu", p, app);
+        }
+        5 => {
+            if let Some(pos) = (!t.path.is_empty()).then(|| t.path.remove(0)) {
+                let hp = ctx.pointer_hover_pos().map(|p| format!("{:.0},{:.0}", p.x, p.y)).unwrap_or_default();
+                t.probe.push(format!("souris {hp} ouvert={}", egui::Popup::is_any_open(ctx)));
+                t.fake_events.push(egui::Event::PointerMoved(pos));
+                ctx.request_repaint();
+            } else if after(1500) {
+                t.probe.push(format!("menu ouvert avec la souris dedans : {}", egui::Popup::is_any_open(ctx)));
+                t.mark("dans le menu", p, app);
+                t.screenshot(ctx, "3-menu.png");
+            }
+        }
+        6 if after(800) => {
+            t.step = 7;
+            let report = t.probe.join(" | ");
+            let ok = t.probe.iter().filter(|l| l.starts_with("menu ouvert") && l.ends_with("true")).count() == 2 && {
+                let ys: Vec<&str> = t.probe.iter().filter(|l| l.starts_with("ligne 3")).map(|l| l.split("y=").nth(1).unwrap_or("")).collect();
+                ys.len() == 2 && ys[0] == ys[1]
+            };
+            t.write_report(ok, &report);
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         _ => {}

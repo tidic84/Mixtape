@@ -323,7 +323,7 @@ impl App {
                 app.restore_session();
             } else if q == "@settings" {
             } else {
-                app.actions.push(Action::Search(q.trim_start_matches("@tour ").trim_start_matches("@mesure ").to_string()));
+                app.actions.push(Action::Search(q.trim_start_matches("@tour ").trim_start_matches("@mesure ").trim_start_matches("@souris ").to_string()));
             }
         } else {
             app.restore_session();
@@ -970,6 +970,17 @@ impl eframe::App for App {
             autotest::step(self, &p);
         }
         self.apply_actions(&p);
+    }
+
+    /// Autotest « @souris » : événements de souris simulés (sans toucher à la vraie souris).
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
+        if let Some(t) = self.autotest.as_mut() {
+            if t.query.starts_with("@souris") {
+                // Test isolé : on ignore la vraie souris de l'utilisateur.
+                raw.events.retain(|e| !matches!(e, egui::Event::PointerMoved(_) | egui::Event::MouseMoved(_) | egui::Event::PointerButton { .. } | egui::Event::PointerGone | egui::Event::MouseWheel { .. }));
+            }
+            raw.events.extend(t.fake_events.drain(..));
+        }
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
