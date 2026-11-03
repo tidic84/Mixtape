@@ -9,6 +9,7 @@ mod library;
 mod lyrics;
 mod mpv;
 mod search;
+mod smtc;
 mod views;
 
 use std::collections::HashMap;
@@ -143,6 +144,7 @@ pub struct ImportState {
 
 /// Pochette prête à l'affichage : texture, 4 teintes de fond, teinte claire.
 pub struct ArtReady {
+    pub file: Option<PathBuf>,
     pub tex: egui::TextureHandle,
     pub colors: [egui::Color32; 4],
     pub light: egui::Color32,
@@ -194,11 +196,23 @@ pub struct App {
     art_tx: mpsc::Sender<(String, Option<art::Art>)>,
 
     keys_rx: mpsc::Receiver<hotkeys::MediaKey>,
+    keys_tx: mpsc::Sender<hotkeys::MediaKey>,
+    smtc: Option<smtc::Smtc>,
+    /// (url du titre publié, pochette finale envoyée, dernière position envoyée, à quand)
+    smtc_state: (String, bool, f64, Instant),
     last_pos: i64,
     last_saved: Instant,
     pub autotest: Option<autotest::AutoTest>,
     title: String,
     corners_done: bool,
+}
+
+fn window_hwnd(frame: &eframe::Frame) -> Option<isize> {
+    use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    match frame.window_handle().ok()?.as_raw() {
+        RawWindowHandle::Win32(h) => Some(h.hwnd.get()),
+        _ => None,
+    }
 }
 
 /// Fenêtre sans bordure : on demande à Windows 11 des coins arrondis (sans effet ailleurs).
@@ -253,11 +267,9 @@ impl App {
             }
         };
 
+        // Boutons multimédia : par la session Windows (SMTC, créée à la première image,
+        // quand la fenêtre existe) ; raccourcis globaux seulement si le SMTC échoue.
         let (keys_tx, keys_rx) = mpsc::channel();
-        if autotest.is_none() {
-            let c = ctx.clone();
-            hotkeys::spawn(keys_tx, move || c.request_repaint());
-        }
         let (lyrics_tx, lyrics_rx) = mpsc::channel();
         let (art_tx, art_rx) = mpsc::channel();
 
@@ -294,6 +306,9 @@ impl App {
             art_rx,
             art_tx,
             keys_rx,
+            keys_tx,
+            smtc: None,
+            smtc_state: (String::new(), false, -1.0, Instant::now()),
             last_pos: -1,
             last_saved: Instant::now(),
             autotest,
@@ -404,6 +419,37 @@ impl App {
         self.last_saved = Instant::now();
     }
 
+    /// Session média Windows : titre/pochette au changement, état, progression.
+    fn update_smtc(&mut self, p: &mpv::Props) {
+        let Some(smtc) = self.smtc.as_mut() else { return };
+        let Some(t) = usize::try_from(p.pos).ok().and_then(|i| self.queue.get(i)).cloned() else {
+            if !self.smtc_state.0.is_empty() {
+                self.smtc_state.0.clear();
+                smtc.clear();
+            }
+            return;
+        };
+        let (artist, title) = lyrics::display_artist_title(&t);
+        let cover = match &self.art {
+            Some((u, Loaded::Ready(a))) if *u == t.url => a.file.clone(),
+            _ => None,
+        };
+        if self.smtc_state.0 != t.url || (!self.smtc_state.1 && cover.is_some()) {
+            smtc.set_track(&title, &artist, cover.as_deref(), &t.thumb);
+            self.smtc_state = (t.url.clone(), cover.is_some(), -1.0, Instant::now());
+        }
+        smtc.set_status(Some(!p.pause));
+        // Progression : toutes les 5 s, ou tout de suite après un saut dans le titre.
+        if let (Some(pos), Some(dur)) = (p.time, p.duration) {
+            let expected = self.smtc_state.2 + if p.pause { 0.0 } else { self.smtc_state.3.elapsed().as_secs_f64() };
+            if self.smtc_state.2 < 0.0 || self.smtc_state.3.elapsed() > Duration::from_secs(5) || (pos - expected).abs() > 2.0 {
+                smtc.set_timeline(pos, dur);
+                self.smtc_state.2 = pos;
+                self.smtc_state.3 = Instant::now();
+            }
+        }
+    }
+
     fn start_search(&mut self, query: String) {
         let query = query.trim().to_string();
         let Some(bin) = self.bin.clone() else { return };
@@ -469,6 +515,7 @@ impl App {
             if self.art.as_ref().is_some_and(|(u, _)| *u == url) {
                 let state = match art {
                     Some(a) => Loaded::Ready(ArtReady {
+                        file: a.file.clone(),
                         tex: self.ctx.load_texture("art", a.image, egui::TextureOptions::LINEAR),
                         colors: a.colors,
                         light: a.light,
@@ -876,6 +923,16 @@ impl eframe::App for App {
         if !self.corners_done {
             self.corners_done = true;
             round_corners(frame);
+            if self.autotest.is_none() {
+                self.smtc = window_hwnd(frame).and_then(|h| {
+                    let c = self.ctx.clone();
+                    smtc::Smtc::new(h, self.keys_tx.clone(), move || c.request_repaint()).ok()
+                });
+                if self.smtc.is_none() {
+                    let c = self.ctx.clone();
+                    hotkeys::spawn(self.keys_tx.clone(), move || c.request_repaint());
+                }
+            }
         }
         self.poll_background();
         let mut p = self.props();
@@ -895,6 +952,7 @@ impl eframe::App for App {
         }
         self.on_track_change(&p);
         self.check_sleep(&p);
+        self.update_smtc(&p);
         if !p.pause && p.pos >= 0 && self.last_saved.elapsed() > Duration::from_secs(15) {
             self.save_session(&p);
         }
@@ -935,6 +993,11 @@ pub fn local_hour() -> u16 {
 }
 
 fn main() -> eframe::Result {
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(i) = args.iter().position(|a| a == "--gsmtc") {
+        smtc::dump_sessions(std::path::Path::new(args.get(i + 1).map_or("gsmtc.txt", |s| s.as_str())));
+        return Ok(());
+    }
     let icon = image::load_from_memory(include_bytes!("../icons/icon.png")).ok().map(|img| {
         let img = img.into_rgba8();
         egui::IconData { width: img.width(), height: img.height(), rgba: img.into_raw() }

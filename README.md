@@ -21,7 +21,8 @@
 - **Vue immersive** : pochette, fond tiré de ses couleurs, **paroles synchronisées** (LRCLIB), file, minuterie de veille.
 - **Égaliseur 6 bandes** avec préréglages, normalisation du volume, **choix de la sortie audio**.
 - **Import Spotify et Deezer** : playlists par lien, coups de cœur d'un profil Deezer public, titres likés Spotify via un fichier exporté (Tune My Music, Exportify, données Spotify). Chaque titre est retrouvé sur YouTube.
-- Aléatoire, répétition, **touches multimédia** du clavier, **session restaurée en pause** au démarrage.
+- Aléatoire, répétition, **session restaurée en pause** au démarrage.
+- **Intégration Windows** : titre, artiste et pochette dans le panneau média de Windows, l'écran de verrouillage et les applis qui lisent les sessions média ; touches multimédia et boutons du casque.
 - Japonais, coréen, chinois… affichés avec les polices de Windows, chargées à la demande.
 - **Léger** : interface native (Rust + egui, rendu OpenGL), ~120 Mo de RAM + ~50 Mo pour mpv, ~0 % de CPU en pause.
 

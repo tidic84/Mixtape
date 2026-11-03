@@ -10,6 +10,8 @@ pub struct Art {
     pub colors: [Color32; 4],
     /// Teinte claire et saturée (halo, ligne de paroles).
     pub light: Color32,
+    /// Copie PNG de la pochette carrée (pour la session média Windows).
+    pub file: Option<std::path::PathBuf>,
 }
 
 const SIZE: u32 = 512;
@@ -47,7 +49,23 @@ pub fn fetch(thumb: &str) -> Option<Art> {
         .max_by_key(|c| c.r().max(c.g()).max(c.b()) as i32 - c.r().min(c.g()).min(c.b()) as i32)
         .unwrap_or(Color32::from_rgb(0xcd, 0xb4, 0xff));
     let image = ColorImage::from_rgba_unmultiplied([SIZE as usize, SIZE as usize], rgba.as_raw());
-    Some(Art { image, colors, light })
+    let file = save_cover(thumb, &rgba);
+    Some(Art { image, colors, light, file })
+}
+
+/// Enregistre la pochette dans %TEMP%\Mixtape (une seule à la fois).
+fn save_cover(thumb: &str, rgba: &image::RgbaImage) -> Option<std::path::PathBuf> {
+    let dir = std::env::temp_dir().join("Mixtape");
+    std::fs::create_dir_all(&dir).ok()?;
+    for old in std::fs::read_dir(&dir).ok()?.flatten() {
+        if old.file_name().to_string_lossy().starts_with("cover-") {
+            let _ = std::fs::remove_file(old.path());
+        }
+    }
+    let id: String = thumb.split("/vi/").nth(1)?.chars().take(11).collect();
+    let path = dir.join(format!("cover-{id}.png"));
+    image::imageops::resize(rgba, 300, 300, FilterType::Triangle).save(&path).ok()?;
+    Some(path)
 }
 
 /// Moyenne d'un quart de l'image, saturée puis ramenée à la luminosité `peak`.

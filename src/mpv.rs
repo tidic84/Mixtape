@@ -91,6 +91,8 @@ impl Mpv {
                 "--audio-display=no",
                 "--force-window=no",
                 "--no-terminal",
+                // Session média Windows publiée par Mixtape (avec pochette), pas par mpv.
+                "--media-controls=no",
                 "--volume=70",
                 "--prefetch-playlist=yes",
                 "--ytdl-format=bestaudio/best",
