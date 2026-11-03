@@ -1,0 +1,29 @@
+[package]
+name = "mixtape"
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.95"
+description = "Lecteur de musique léger : recherche YouTube, lecture via mpv, interface native egui"
+
+[dependencies]
+# Rendu OpenGL (glow) : mesuré à ~72 Mo privés de pilote NVIDIA, contre ~430 Mo en DirectX 12 (wgpu).
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "clipboard", "glow"] }
+egui_extras = { version = "0.37", features = ["http", "image"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ehttp = "0.7"
+raw-window-handle = "0.6"
+rfd = { version = "0.17", default-features = false }
+tokio = { version = "1", features = ["rt", "net", "io-util", "sync", "time", "macros"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_System_SystemInformation", "Win32_Graphics_Dwm"] }
+
+[build-dependencies]
+winresource = "0.1"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+codegen-units = 1
+panic = "abort"
